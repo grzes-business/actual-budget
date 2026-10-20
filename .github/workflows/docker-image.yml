@@ -1,6 +1,6 @@
-name: Build Nightly Docker Image
+name: Build Docker Image
 
-# Nightly Docker images are built for every push to master
+# Builds the sync server image and pushes it to ghcr.io on every push to master
 on:
   push:
     branches:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: docker-nightly-build
+  group: docker-image-build
   cancel-in-progress: true
 
 permissions:
@@ -16,28 +16,19 @@ permissions:
   packages: write
 
 env:
-  IMAGES: |
-    ${{ !github.event.repository.fork && 'actualbudget/actual-server' || '' }}
-    ghcr.io/${{ github.repository_owner }}/actual-server
-    ghcr.io/${{ github.repository_owner }}/actual
+  IMAGE: ghcr.io/${{ github.repository_owner }}/actual-server
 
   # Creates the following tags:
-  # - actual-server:nightly
-  # - actual-server:edge (kept for backwards compatibility)
+  # - actual-server:latest
+  # - actual-server:sha-90dd603
   TAGS: |
-    type=raw,value=nightly,enable={{is_default_branch}}
-    type=raw,value=edge,enable={{is_default_branch}}
+    type=raw,value=latest,enable={{is_default_branch}}
     type=sha
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' || !github.event.repository.fork
     name: Build Docker image
-    runs-on: depot-ubuntu-latest-4
-    environment: release
-    strategy:
-      matrix:
-        os: [ubuntu, alpine]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -53,21 +44,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          # Push to both Docker Hub and Github Container Registry
-          images: ${{ env.IMAGES }}
-          flavor: ${{ matrix.os != 'ubuntu' && format('suffix=-{0}', matrix.os) || '' }}
+          images: ${{ env.IMAGE }}
           tags: ${{ env.TAGS }}
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        if: github.event_name != 'pull_request' && !github.event.repository.fork
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -78,8 +59,8 @@ jobs:
       - name: Set up environment
         uses: ./.github/actions/setup
         with:
-          # Avoid restoring potentially poisoned caches in release jobs.
           cache: 'false'
+
       - name: Build Web
         run: yarn build:server
 
@@ -89,13 +70,13 @@ jobs:
           context: .
           push: false
           load: true
-          file: packages/sync-server/docker/${{ matrix.os }}.Dockerfile
-          tags: actualbudget/actual-server-testing
+          file: packages/sync-server/docker/ubuntu.Dockerfile
+          tags: actual-server-testing
 
       - name: Test that the docker image boots
         timeout-minutes: 1
         run: |
-          docker run --detach --network=host --name actual-server actualbudget/actual-server-testing
+          docker run --detach --network=host --name actual-server actual-server-testing
           HEALTHCMD=$(yq -r '.services.actual_server.healthcheck.test[1]' packages/sync-server/docker-compose.yml)
           until docker exec actual-server sh -c "$HEALTHCMD"; do sleep 1; done
 
@@ -103,15 +84,12 @@ jobs:
         if: failure()
         run: docker logs actual-server || true
 
-      # This will use the cache from the earlier build step and not rebuild the image
-      # https://docs.docker.com/build/ci/github-actions/test-before-push/
+      # Reuses the cache from the test build above instead of rebuilding
       - name: Build and push images
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
-          file: packages/sync-server/docker/${{ matrix.os }}.Dockerfile
-          platforms: linux/amd64,linux/arm64${{ matrix.os == 'alpine' && ',linux/arm/v7,linux/arm/v6' || '' }}
+          push: true
+          file: packages/sync-server/docker/ubuntu.Dockerfile
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
-          build-args: |
-            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
