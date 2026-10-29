@@ -17,12 +17,19 @@ const BASE_URL = 'https://api.enablebanking.com';
 
 // --- Type definitions ---
 
+type EnableBankingParty = {
+  name?: string | null;
+  // Some banks (e.g. ING Poland) leave `name` empty and put the merchant or
+  // counterparty into the postal address lines instead.
+  postal_address?: { address_line?: string[] | string | null } | null;
+};
+
 export type EnableBankingTransaction = {
   entry_reference?: string;
   transaction_id?: string;
   transaction_amount: { currency: string; amount: string };
-  creditor?: { name?: string | null } | null;
-  debtor?: { name?: string | null } | null;
+  creditor?: EnableBankingParty | null;
+  debtor?: EnableBankingParty | null;
   credit_debit_indicator?: 'CRDT' | 'DBIT';
   status?: 'BOOK' | 'PDNG';
   booking_date?: string;
@@ -208,6 +215,16 @@ function cleanRemittanceArray(arr: string[]): string[] {
   return arr.map(stripSepaPrefix).filter(Boolean);
 }
 
+function getPartyName(party?: EnableBankingParty | null): string {
+  if (party?.name) return party.name;
+  const lines = party?.postal_address?.address_line;
+  const joined = (Array.isArray(lines) ? lines : [lines])
+    .map(line => line?.trim())
+    .filter(Boolean)
+    .join(' ');
+  return joined;
+}
+
 export function normalizeTransaction(
   tx: EnableBankingTransaction,
 ): BankSyncTransaction {
@@ -219,11 +236,11 @@ export function normalizeTransaction(
   let payeeName = '';
   // With a known direction, the other party is the account holder.
   if (tx.credit_debit_indicator === 'CRDT') {
-    payeeName = tx.debtor?.name || '';
+    payeeName = getPartyName(tx.debtor);
   } else if (tx.credit_debit_indicator === 'DBIT') {
-    payeeName = tx.creditor?.name || '';
+    payeeName = getPartyName(tx.creditor);
   } else {
-    payeeName = tx.creditor?.name || tx.debtor?.name || '';
+    payeeName = getPartyName(tx.creditor) || getPartyName(tx.debtor);
   }
 
   const cleanedAll = tx.remittance_information
