@@ -1,14 +1,16 @@
 name: Build Docker Image
 
 # Builds the sync server image and pushes it to ghcr.io on every push to master
+# or to a production branch (prod-<release>)
 on:
   push:
     branches:
       - master
+      - 'prod-*'
   workflow_dispatch:
 
 concurrency:
-  group: docker-image-build
+  group: docker-image-build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -19,10 +21,13 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/actual-server
 
   # Creates the following tags:
-  # - actual-server:latest
+  # - actual-server:latest (master)
+  # - actual-server:prod and actual-server:prod-<release> (prod-* branches)
   # - actual-server:sha-90dd603
   TAGS: |
     type=raw,value=latest,enable={{is_default_branch}}
+    type=raw,value=prod,enable=${{ startsWith(github.ref_name, 'prod-') }}
+    type=ref,event=branch,enable=${{ startsWith(github.ref_name, 'prod-') }}
     type=sha
 
 jobs:
